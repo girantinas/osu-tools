@@ -39,7 +39,7 @@ namespace PerformanceCalculator.Profile
 
         public override void Execute()
         {
-                        var displayPlays = new List<UserPlayInfo>();
+            var displayPlays = new List<UserPlayInfo>();
 
             var ruleset = LegacyHelper.GetRulesetFromLegacyID(Ruleset ?? 0);
 
@@ -93,11 +93,11 @@ namespace PerformanceCalculator.Profile
             var liveOrdered = displayPlays.OrderByDescending(p => p.LivePP).ToList();
 
             int index = 0;
-            double totalLocalPP = localOrdered.Sum(play => Math.Pow(0.95, index++) * play.LocalPP);
+            double totalLocalPP = localOrdered.Sum(play => Math.Pow(0.95, index++) * play.LocalPP) + extrapolatePP(localOrdered);
             double totalLivePP = userData.pp_raw;
 
             index = 0;
-            double nonBonusLivePP = liveOrdered.Sum(play => Math.Pow(0.95, index++) * play.LivePP);
+            double nonBonusLivePP = liveOrdered.Sum(play => Math.Pow(0.95, index++) * play.LivePP) + extrapolatePP(liveOrdered);
 
             //todo: implement properly. this is pretty damn wrong.
             var playcountBonusPP = (totalLivePP - nonBonusLivePP);
@@ -135,6 +135,56 @@ namespace PerformanceCalculator.Profile
             var req = new JsonWebRequest<dynamic>($"{base_url}/api/{request}");
             req.Perform();
             return req.ResponseObject;
+        }
+
+        private double extrapolatePP(List ppList)
+        {
+            if (ppList.Count < 100)
+                return 0;
+
+            double[] a = linearFit(ppList);
+            double n = ppList.Count + 1;
+            double extraPP = 0;
+
+            while (true)
+            {
+                double predictedPP = (a[0] + a[1] * n) * Math.pow(0.95, n);
+
+                if (predictedPP < 0)
+                {
+                    break;
+                }
+
+                extraPP += predictedPP;
+                n++;
+            }
+
+            return extraPP;
+        }
+
+        private double[] linearFit(List list)
+        {
+            double sumOxy = 0;
+            double sumOx2 = 0;
+            double xBar = 0;
+            double yBar = 0;
+            foreach (double val in list)
+            {
+                xBar++;
+                yBar += val;
+            }
+            xBar = xBar / list.Count;
+            yBar = yBar / list.Count;
+            double n = 0;
+            foreach (double pp in list)
+            {
+                sumOxy += (n - xBar) * (val - yBar);
+                sumOx2 += Math.pow(n - xBar, 2);
+                n++;
+            }
+            double Oxy = sumOxy / list.Count;
+            double Ox2 = sumOx2 / list.Count;
+            return new double[] { yBar - (Oxy / Ox2) * xBar, Oxy / Ox2 };
         }
     }
 }
