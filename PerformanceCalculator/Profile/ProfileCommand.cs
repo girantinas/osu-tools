@@ -93,11 +93,11 @@ namespace PerformanceCalculator.Profile
             var liveOrdered = displayPlays.OrderByDescending(p => p.LivePP).ToList();
 
             int index = 0;
-            double totalLocalPP = localOrdered.Sum(play => Math.Pow(0.95, index++) * play.LocalPP) + extrapolatePP(localOrdered);
+            double totalLocalPP = localOrdered.Sum(play => Math.Pow(0.95, index++) * play.LocalPP) + extrapolatePP(localOrdered, "local", (int)userData.playcount);
             double totalLivePP = userData.pp_raw;
 
             index = 0;
-            double nonBonusLivePP = liveOrdered.Sum(play => Math.Pow(0.95, index++) * play.LivePP) + extrapolatePP(liveOrdered);
+            double nonBonusLivePP = liveOrdered.Sum(play => Math.Pow(0.95, index++) * play.LivePP) + extrapolatePP(liveOrdered, "live", (int)userData.playcount);
 
             //todo: implement properly. this is pretty damn wrong.
             var playcountBonusPP = (totalLivePP - nonBonusLivePP);
@@ -137,18 +137,18 @@ namespace PerformanceCalculator.Profile
             return req.ResponseObject;
         }
 
-        private double extrapolatePP(List ppList)
+        private double extrapolatePP(List<UserPlayInfo> ppList, string ppStatus, int playcount)
         {
             if (ppList.Count < 100)
                 return 0;
 
-            double[] a = linearFit(ppList);
-            double n = ppList.Count + 1;
+            double[] b = gaussNewtonReciprocalFit(ppList, ppStatus);
             double extraPP = 0;
 
-            while (true)
+            for (var i = ppList.Count + 1; i < playcount; i++)
             {
-                double predictedPP = (a[0] + a[1] * n) * Math.pow(0.95, n);
+                // double predictedPP = (b[0] + b[1] * i) * Math.Pow(0.95, i);
+                double predictedPP = (b[0] + b[1] / i) * Math.Pow(0.95, i);
 
                 if (predictedPP < 0)
                 {
@@ -156,35 +156,141 @@ namespace PerformanceCalculator.Profile
                 }
 
                 extraPP += predictedPP;
-                n++;
             }
-
             return extraPP;
         }
 
-        private double[] linearFit(List list)
+
+        private double[] linearFit(List<UserPlayInfo> list, string ppStatus)
         {
-            double sumOxy = 0;
-            double sumOx2 = 0;
             double xBar = 0;
             double yBar = 0;
-            foreach (double val in list)
-            {
-                xBar++;
-                yBar += val;
-            }
-            xBar = xBar / list.Count;
-            yBar = yBar / list.Count;
+            double N = list.Count;
+
+            if (ppStatus == "live")
+                yBar = list.Sum(play => play.LivePP) / N;
+            else if (ppStatus == "local")
+                yBar = list.Sum(play => play.LocalPP) / N;
+
+            xBar = (N - 1) / 2;
+
+            double Sxy = 0;
+            double Sx2 = 0;
+
             double n = 0;
-            foreach (double pp in list)
+            if (ppStatus == "live")
+                Sxy = list.Sum(play => (n++ - xBar) * (play.LivePP - yBar)) / N;
+            else if (ppStatus == "local")
+                Sxy = list.Sum(play => (n++ - xBar) * (play.LocalPP - yBar)) / N;
+
+            n = 0;
+            Sx2 = list.Sum(play => Math.Pow(n++ - xBar, 2)) / N;
+
+            double slope = Sxy / Sx2;
+            double[] coefficients = { yBar - slope * xBar, slope };
+            return coefficients;
+        }
+
+        private double[] reciprocalFit(List<UserPlayInfo> list, string ppStatus)
+        {
+            // let z be 1/x, this constructs a linear map from z to y, which in turn is a reciprocal map from x to y
+            double zBar = 0;
+            double yBar = 0;
+            double N = list.Count;
+
+            if (ppStatus == "live")
+                yBar = list.Sum(play => play.LivePP) / N;
+            else if (ppStatus == "local")
+                yBar = list.Sum(play => play.LocalPP) / N;
+
+            double n = 1;
+            zBar = list.Sum(play => 1 / (n++)) / N;
+
+            double Syz = 0;
+            double Sz2 = 0;
+
+            n = 1;
+            if (ppStatus == "live")
+                Syz = list.Sum(play => (1 / (n++) - zBar) * (play.LivePP - yBar)) / N;
+            else if (ppStatus == "local")
+                Syz = list.Sum(play => (1 / (n++) - zBar) * (play.LocalPP - yBar)) / N;
+
+            n = 1;
+            Sz2 = list.Sum(play => Math.Pow(1 / (n++) - zBar, 2)) / N;
+
+            double slope = Syz / Sz2;
+            double[] coefficients = { yBar - slope * zBar, slope };
+            return coefficients;
+        }
+
+        // This fit uses the Gauss-Newton Method to Fit a b0 + b1/x curve; see https://en.wikipedia.org/wiki/Gauss%E2%80%93Newton_algorithm
+        // The residual of a fit is r_n = y_n - (b0 + b1/x_n)
+        // In this case x_n = n, the index of our pp value (top score is 1, 2nd is 2, etc)
+        // y_n is the pp value of the nth score
+        // r_n = pp_n - (b0 + b1/n)
+        // The formula for recursion is given by b = b - (J * JT)^(-1) * JT * r
+        // where J represents the Jacobian, JT the transpose of that, r the column vector of all residuals, and b the column vector of all constants
+        private double[] gaussNewtonReciprocalFit(List<UserPlayInfo> list, string ppStatus)
+        {
+            int N = list.Count;
+
+            //Initial guess; normal 1/x curve shifted up so x=1 is at the pp value
+            double[] b = { 0, 1 };
+            if (ppStatus == "live")
+                b[0] = list[0].LivePP;
+            else if (ppStatus == "local")
+                b[0] = list[0].LocalPP;
+
+            // Each row of the Jacobian is the partial of residual[row] with respect to c[column]. Partial(b[0]) = -1; Partial(b[1]) = -1/n, where n is the row number
+            // Jacobian is { { -1, -1/1 }, { -1, -1/2 }, ... { -1, -1/N } }. Its transpose is simply the operation J[i,j] -> JT[j,i]
+            // The product of JT and J is given as { { N, Sum of Reciprocals to N }, { Sum of Reciprocals to N, Sum of Reciprocals squared to N } }
+            double[,] product = new double[2, 2];
+            product[0, 0] = N;
+            double n = 1;
+            product[0, 1] = list.Sum(p => Math.Pow(n++, -1));
+            product[1, 0] = product[0, 1];
+            n = 1;
+            product[1, 1] = list.Sum(p => Math.Pow(n++, -2));
+
+            //Next take the inverse of the product matrix
+            double det = product[0, 0] * product[1, 1] - product[0, 1] * product[1, 0];
+            double[,] inverseOfProduct = { { product[1, 1] / det, -product[0, 1] / det }, { -product[1, 0] / det, product[0, 0] / det } };
+
+            double[,] newProduct = new double[2, N];
+
+            //Finally, multiply by the transpose one more time
+            for (var i = 0; i < N; i++)
             {
-                sumOxy += (n - xBar) * (val - yBar);
-                sumOx2 += Math.pow(n - xBar, 2);
-                n++;
+                newProduct[0, i] = -(inverseOfProduct[0, 0] + inverseOfProduct[0, 1] / (i + 1));
+                newProduct[1, i] = -(inverseOfProduct[1, 0] + inverseOfProduct[1, 1] / (i + 1));
             }
-            double Oxy = sumOxy / list.Count;
-            double Ox2 = sumOx2 / list.Count;
-            return new double[] { yBar - (Oxy / Ox2) * xBar, Oxy / Ox2 };
+
+            //Iterate to get better and better values for constants; note the Jacobian is not a function of the residuals so it can stay out of the loop.
+            for (var iterations = 0; iterations < 1000; iterations++)
+            {
+                //residual calculation
+                double[] residuals = new double[100];
+                for (var i = 0; i < N; i++)
+                {
+                    if (ppStatus == "live")
+                        residuals[i] = list[i].LivePP - b[0] - b[1] / (i + 1);
+                    else if (ppStatus == "local")
+                        residuals[i] = list[i].LocalPP - b[0] - b[1] / (i + 1);
+                }
+
+                //deviations from residuals
+                double[] deltab = { 0, 0 };
+                for (var i = 0; i < N; i++)
+                {
+                    deltab[0] += residuals[i] * newProduct[0, i];
+                    deltab[1] += residuals[i] * newProduct[1, i];
+                }
+                //constants are adjusted by the deviations
+                b[0] -= deltab[0];
+                b[1] -= deltab[1];
+            }
+
+            return b;
         }
     }
 }
