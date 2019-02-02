@@ -8,7 +8,9 @@
             "program": "dotnet",
             "args": [
                 "${workspaceRoot}/PerformanceCalculator/bin/Debug/netcoreapp2.0/PerformanceCalculator.dll",
-                "place-your-arguments-here (launch.json)"
+                "profile",
+                "WubWoofWolf",
+                "32091c4a73a5d3f46f890272e9ff858377b78aab",
             ],
             "cwd": "${workspaceRoot}",
             "preLaunchTask": "Build (Debug)",
